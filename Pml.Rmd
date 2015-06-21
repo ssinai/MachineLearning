@@ -1,0 +1,192 @@
+---
+title: "Machine Learning Course Project"
+author: "Steve Sinai"
+date: "June 20, 2015"
+output: html_document
+---
+
+#Background
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset). 
+
+#Data
+
+The training data are available here:
+
+[pml_training.csv](http://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv)
+
+The test data are available here: 
+
+[pml_testing.csv](http://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv)
+
+The data for this project come from this source: http://groupware.les.inf.puc-rio.br/har. If you use the document you create for this class for any purpose please cite them as they have been very generous in allowing their data to be used for this kind of assignment. 
+
+#What you should submit
+The goal of your project is to predict the manner in which they did the exercise. This is the "classe" variable in the training set. You may use any of the other variables to predict with. You should create a report describing how you built your model, how you used cross validation, what you think the expected out of sample error is, and why you made the choices you did. You will also use your prediction model to predict 20 different test cases. 
+
+1. Your submission should consist of a link to a Github repo with your R markdown and compiled HTML file describing your analysis. Please constrain the text of the writeup to < 2000 words and the number of figures to be less than 5. It will make it easier for the graders if you submit a repo with a gh-pages branch so the HTML page can be viewed online (and you always want to make it easy on graders :-).
+2. You should also apply your machine learning algorithm to the 20 test cases available in the test data above. Please submit your predictions in appropriate format to the programming assignment for automated grading. See the programming assignment for additional details. 
+
+Load the required libraries and set up to use multiple processors
+```{r, echo=TRUE, message=FALSE}
+# Load the required libraries
+library(caret)
+library(randomForest)
+library(rpart) 
+library(rpart.plot)
+library(RColorBrewer)
+library(rattle)
+library(kernlab)
+library(doParallel)
+library(nnet)
+library(caTools)
+library(arm)
+
+# Set up to take advantage of multiple processing cores
+cl <- makeCluster(detectCores())
+registerDoParallel(cl)
+```
+
+Read data.
+```{r}
+# Download (if necessary) and create the csv files containing training and validation data
+trainUrl <- "http://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+validateUrl <- "http://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+
+trainCsv    <- "pml-training.csv";
+validateCsv <-"pml-testing.csv"
+
+if (!file.exists(trainCsv)) { 
+    download.file(trainUrl,trainCsv)
+}
+training <- read.csv(trainCsv, na.strings=c("NA","#DIV/0!",""))
+
+if (!file.exists(validateCsv)) {
+    download.file(validateUrl,validateCsv)
+}
+validation_data <- read.csv(validateCsv, na.strings=c("NA","#DIV/0!",""))
+
+set.seed(1234)
+```
+
+Clean and process the data.
+```{r}
+# Partition out training and testing data.  60% testing, 40% training
+inTrain <- createDataPartition(y=training$classe, p=0.6, list=FALSE)
+training_data <- training[inTrain, ] 
+testing_data <- training[-inTrain, ]
+
+# Determine which features have little or no variance, and throw them out immediately
+nzv_train <- nearZeroVar(training_data, saveMetrics=TRUE)
+training_data <- training_data[,nzv_train$nzv==FALSE & nzv_train$zeroVar==FALSE]
+testing_data <- testing_data[,nzv_train$nzv==FALSE & nzv_train$zeroVar==FALSE]
+validation_data <- validation_data[,nzv_train$nzv==FALSE & nzv_train$zeroVar==FALSE]
+
+# The first six columns of data are irrelevant
+training_data <- training_data[, -(1:6)]
+testing_data <- testing_data[,-(1:6)]
+validation_data <- validation_data[,-(1:6)]
+
+# Remove any columns with more than 60% NAs.
+valid_columns <- lapply(training_data, function(x) sum(is.na(x)) / length(x)) <= 0.6
+training_data <- training_data[ valid_columns ]
+testing_data <- testing_data[ valid_columns ]
+validation_data <- validation_data[ valid_columns ]
+```
+
+Run several types of simulations to see which one works best. We'll run
+1. svmRadial (Support Vector Machines Radial)
+2. svmLinear (Support Vector Machines Linear)
+3. nnet (Neural Net)
+4. rf (Random Forest)
+5. knn (K Nearest Neighbor)
+6. bayesglm (Bayesian GLM)
+
+We'll calculate both Out of Sample Accuracy and Error for each simulation type.
+```{r}
+outOfSampleAccuracy <- numeric()
+outOfSampleError <- numeric()
+
+# Set some training parameters
+tc <- trainControl(method = "cv", number = 7,
+                   verboseIter=FALSE , preProcOptions="pca", allowParallel=TRUE)
+
+# Support Vector Machines Radial
+svmr <- train(classe ~ ., data = training_data, method = "svmRadial", trControl= tc)
+testingPrediction <- predict(svmr, testing_data)
+accuracy <- sum(testingPrediction == testing_data$classe) / length(testingPrediction)
+outOfSampleAccuracy <- c(outOfSampleAccuracy, accuracy)
+outOfSampleError <- c(outOfSampleError, 1-accuracy)
+
+# Neural Net
+nnet <- train(classe ~ ., data = training_data, method = "nnet", trControl= tc, verbose=FALSE)
+testingPrediction <- predict(nnet, testing_data)
+accuracy <- sum(testingPrediction == testing_data$classe) / length(testingPrediction)
+outOfSampleAccuracy <- c(outOfSampleAccuracy, accuracy)
+outOfSampleError <- c(outOfSampleError, 1-accuracy)
+
+# Random Forest
+rf <- train(classe ~ ., data = training_data, method = "rf", trControl= tc)
+testingPrediction <- predict(rf, testing_data)
+accuracy <- sum(testingPrediction == testing_data$classe) / length(testingPrediction)
+outOfSampleAccuracy <- c(outOfSampleAccuracy, accuracy)
+outOfSampleError <- c(outOfSampleError, 1-accuracy)
+
+# K Nearest Neighbor
+knn <- train(classe ~ ., data = training_data, method = "knn", trControl= tc)
+testingPrediction <- predict(knn, testing_data)
+accuracy <- sum(testingPrediction == testing_data$classe) / length(testingPrediction)
+outOfSampleAccuracy <- c(outOfSampleAccuracy, accuracy)
+outOfSampleError <- c(outOfSampleError, 1-accuracy)
+
+# Support Vector Machines Linear
+svml <- train(classe ~ ., data = training_data, method = "svmLinear", trControl= tc)
+testingPrediction <- predict(svml, testing_data)
+accuracy <- sum(testingPrediction == testing_data$classe) / length(testingPrediction)
+outOfSampleAccuracy <- c(outOfSampleAccuracy, accuracy)
+outOfSampleError <- c(outOfSampleError, 1-accuracy)
+
+# Bayesian GLM
+bayesglm <- train(classe ~ ., data = training_data, method = "bayesglm", trControl= tc)
+testingPrediction <- predict(bayesglm, testing_data)
+accuracy <- sum(testingPrediction == testing_data$classe) / length(testingPrediction)
+outOfSampleAccuracy <- c(outOfSampleAccuracy, accuracy)
+outOfSampleError <- c(outOfSampleError, 1-accuracy)
+```
+
+```{r}
+InSampleAccuracy <- c(max(svmr$results$Accuracy),
+        max(nnet$results$Accuracy),
+        max(rf$results$Accuracy),
+        max(knn$results$Accuracy),
+        max(svml$results$Accuracy),
+        max(bayesglm$results$Accuracy))
+
+InSampleAccuracy
+```
+The third number is Random Forest. It has the highest In Sample Accuracy, so the lowest In Sample Error (1-In Sample Accuracy). The expectation is that Random Forest Out of Sample Accuracy should be lower than its In Sample Accuracy, and its Out of Sample Error should be higher than its In Sample Error.
+
+Display Out of Sample Error and Out of Sample Accuracy
+```{r}
+model <- c("SVM (radial)", "Neural Net", "Random Forest", "KNN", "SVM (Linear)", "Bayesian GLM")
+
+performance <- data.frame(model, outOfSampleError, outOfSampleAccuracy)
+performance[order(performance$outOfSampleError),]
+```
+Our expectations regarding Out of Sample Accuracy and Out of Sample Error turned out to be correct. Out of Sample Accuracy was slightly lower than In Sample Accuracy, and Out of Sample Error was slightly higher than In Sample Error. 
+
+Since Random Forest turns out to have the lowest Out of Sample Error, we'll run predict() on that model with the 20 row validation data. Then we'll write out each prediction to its own text file for submission to Coursera.
+```{r}
+rfPred <- predict(rf, validation_data)
+
+pml_write_files = function(x){
+    n = length(x)
+    for(i in 1:n){
+        filename = paste0("problem_id_",i,".txt")
+        write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+    }
+}
+
+pml_write_files(rfPred)
+```
+
+After running the predictions, it turned out that Random Forest predicted all 20 of the validation values correctly. Those were submitted to Coursera and were confirmed to be correct.
